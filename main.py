@@ -5,51 +5,46 @@ import xgboost as xgb
 import pandas as pd
 import numpy as np
 import os
-import traceback
 
 app = FastAPI(title="Return Shield AI API")
 
 MODEL_PATH = "return_shield_ai_v2.json"
 
-# Автосоздание модели при первом запуске
+# Создаём модель, если её нет
 if not os.path.exists(MODEL_PATH):
-    print("Модель не найдена. Создаём новую...")
+    print("Создаём модель...")
     np.random.seed(42)
-    n = 12000
+    n = 8000
 
-    data = {
+    df = pd.DataFrame({
         'customer_return_rate': np.random.beta(2, 5, n),
         'product_return_rate': np.random.beta(3, 7, n),
         'time_on_page': np.random.exponential(130, n),
         'items_in_cart': np.random.poisson(2.8, n),
-        'size_mismatch': np.random.binomial(1, 0.38, n),
-        'price': np.random.lognormal(4.6, 0.75, n),
-    }
+        'size_mismatch': np.random.binomial(1, 0.4, n),
+        'price': np.random.uniform(1000, 15000, n),
+    })
 
-    df = pd.DataFrame(data)
+    categories = ['футболки', 'джинсы', 'платья', 'обувь', 'верхняя одежда']
+    seasons = ['зима', 'лето']
 
-    categories = ['джинсы', 'платья', 'верхняя одежда', 'футболки', 'обувь', 'аксессуары', 'брюки', 'юбки', 'свитеры', 'пальто']
-    seasons = ['зима', 'весна', 'лето', 'осень']
-
-    df['category'] = np.random.choice(categories, n, p=[0.18,0.14,0.15,0.12,0.10,0.08,0.08,0.07,0.05,0.03])
+    df['category'] = np.random.choice(categories, n)
     df['season'] = np.random.choice(seasons, n)
 
-    df = pd.get_dummies(df, columns=['category', 'season'], drop_first=True)
+    df = pd.get_dummies(df, columns=['category', 'season'])
 
-    logit = -5.0 + 6.0*df['customer_return_rate'] + 4.5*df['product_return_rate'] -0.006*df['time_on_page'] +             0.7*df['items_in_cart'] + 3.0*df['size_mismatch'] -0.002*df['price']
-
-    prob = 1 / (1 + np.exp(-logit))
-    df['return'] = (np.random.rand(n) < prob).astype(int)
+    # Простая целевая переменная
+    df['return'] = (df['customer_return_rate'] > 0.35).astype(int)
 
     X = df.drop('return', axis=1)
     y = df['return']
 
-    model = xgb.XGBClassifier(n_estimators=300, max_depth=8, learning_rate=0.05, eval_metric='logloss')
+    model = xgb.XGBClassifier(n_estimators=200, max_depth=6, learning_rate=0.1, eval_metric='logloss')
     model.fit(X, y)
     model.save_model(MODEL_PATH)
-    print("Модель успешно создана")
+    print("Модель создана")
 else:
-    print("Модель загружена из файла")
+    print("Модель загружена")
 
 model = xgb.XGBClassifier()
 model.load_model(MODEL_PATH)
@@ -68,37 +63,33 @@ class OrderInput(BaseModel):
 def predict_return(order: OrderInput):
     try:
         data = pd.DataFrame([order.dict()])
-        data = pd.get_dummies(data, columns=['category', 'season'], drop_first=True)
+        data = pd.get_dummies(data, columns=['category', 'season'])
 
-        # Важно: приводим к тем же колонкам, что были при обучении
+        # Приводим к колонкам модели
         model_features = model.get_booster().feature_names
         for col in model_features:
             if col not in data.columns:
                 data[col] = 0
         data = data[model_features]
 
-        risk = model.predict_proba(data)[0][1]
+        risk = float(model.predict_proba(data)[0][1])
         risk_percent = round(risk * 100, 1)
 
-        if risk < 0.40:
-            recommendation = "Низкий риск — можно отправлять заказ"
-            action = "normal"
+        if risk < 0.4:
+            rec = "Низкий риск — отправлять обычным способом"
         elif risk < 0.65:
-            recommendation = "Средний риск — показать рекомендации по размеру"
-            action = "recommend"
+            rec = "Средний риск — показать рекомендации по размеру"
         else:
-            recommendation = "Высокий риск — предложить скидку или Store Credit"
-            action = "discount"
+            rec = "Высокий риск — предложить скидку или store credit"
 
         return {
             "risk_percent": risk_percent,
-            "recommendation": recommendation,
-            "suggested_action": action,
-            "estimated_savings_rub": round(risk * 1250, 0),
+            "recommendation": rec,
+            "estimated_savings_rub": round(risk * 1250),
             "co2_savings_kg": round(risk * 28.5, 1)
         }
     except Exception as e:
-        return {"error": str(e), "trace": traceback.format_exc()}
+        return {"error": str(e)}
 
 if __name__ == "__main__":
     import uvicorn
