@@ -5,16 +5,17 @@ import xgboost as xgb
 import pandas as pd
 import numpy as np
 import os
+import traceback
 
 app = FastAPI(title="Return Shield AI API")
 
-# Автоматическое создание модели, если файл не существует
 MODEL_PATH = "return_shield_ai_v2.json"
 
+# Автосоздание модели при первом запуске
 if not os.path.exists(MODEL_PATH):
     print("Модель не найдена. Создаём новую...")
     np.random.seed(42)
-    n = 10000
+    n = 12000
 
     data = {
         'customer_return_rate': np.random.beta(2, 5, n),
@@ -26,6 +27,7 @@ if not os.path.exists(MODEL_PATH):
     }
 
     df = pd.DataFrame(data)
+
     categories = ['джинсы', 'платья', 'верхняя одежда', 'футболки', 'обувь', 'аксессуары', 'брюки', 'юбки', 'свитеры', 'пальто']
     seasons = ['зима', 'весна', 'лето', 'осень']
 
@@ -45,7 +47,7 @@ if not os.path.exists(MODEL_PATH):
     model = xgb.XGBClassifier(n_estimators=300, max_depth=8, learning_rate=0.05, eval_metric='logloss')
     model.fit(X, y)
     model.save_model(MODEL_PATH)
-    print("Модель успешно создана и сохранена")
+    print("Модель успешно создана")
 else:
     print("Модель загружена из файла")
 
@@ -64,35 +66,39 @@ class OrderInput(BaseModel):
 
 @app.post("/predict")
 def predict_return(order: OrderInput):
-    data = pd.DataFrame([order.dict()])
-    data = pd.get_dummies(data, columns=['category', 'season'], drop_first=True)
+    try:
+        data = pd.DataFrame([order.dict()])
+        data = pd.get_dummies(data, columns=['category', 'season'], drop_first=True)
 
-    model_features = model.get_booster().feature_names
-    for col in model_features:
-        if col not in data.columns:
-            data[col] = 0
-    data = data[model_features]
+        # Важно: приводим к тем же колонкам, что были при обучении
+        model_features = model.get_booster().feature_names
+        for col in model_features:
+            if col not in data.columns:
+                data[col] = 0
+        data = data[model_features]
 
-    risk = model.predict_proba(data)[0][1]
-    risk_percent = round(risk * 100, 1)
+        risk = model.predict_proba(data)[0][1]
+        risk_percent = round(risk * 100, 1)
 
-    if risk < 0.40:
-        recommendation = "Низкий риск — можно отправлять заказ"
-        action = "normal"
-    elif risk < 0.65:
-        recommendation = "Средний риск — показать рекомендации по размеру"
-        action = "recommend"
-    else:
-        recommendation = "Высокий риск — предложить скидку или Store Credit"
-        action = "discount"
+        if risk < 0.40:
+            recommendation = "Низкий риск — можно отправлять заказ"
+            action = "normal"
+        elif risk < 0.65:
+            recommendation = "Средний риск — показать рекомендации по размеру"
+            action = "recommend"
+        else:
+            recommendation = "Высокий риск — предложить скидку или Store Credit"
+            action = "discount"
 
-    return {
-        "risk_percent": risk_percent,
-        "recommendation": recommendation,
-        "suggested_action": action,
-        "estimated_savings_rub": round(risk * 1250, 0),
-        "co2_savings_kg": round(risk * 28.5, 1)
-    }
+        return {
+            "risk_percent": risk_percent,
+            "recommendation": recommendation,
+            "suggested_action": action,
+            "estimated_savings_rub": round(risk * 1250, 0),
+            "co2_savings_kg": round(risk * 28.5, 1)
+        }
+    except Exception as e:
+        return {"error": str(e), "trace": traceback.format_exc()}
 
 if __name__ == "__main__":
     import uvicorn
